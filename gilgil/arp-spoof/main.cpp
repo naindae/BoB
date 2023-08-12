@@ -13,6 +13,8 @@
 #include "ethhdr.h"
 #include "arphdr.h"
 #include <netinet/if_ether.h>
+#include <pthread.h>
+#include <time.h>
 
 //#define ETHER_ADDR_LEN 6
 
@@ -190,8 +192,11 @@ int find_mac_address(char* ip_str, char* mac_str) {
 }
 
 
+
 int main(int argc, char* argv[]) {
+
 	struct Mac gateway;
+	struct Mac sender_mac;
 	char* dev = argv[1];
 	char mac_str[6];
 	char errbuf[PCAP_ERRBUF_SIZE];
@@ -221,6 +226,7 @@ int main(int argc, char* argv[]) {
 
 	char mac_str2[18];
 	char gateway_mac[18];
+
 	if (find_mac_address(argv[3], mac_str2) == 0) {
 	printf("GATEWAY IP: %s -> MAC: %s\n", argv[3], mac_str2);
 	}else{
@@ -228,6 +234,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	gateway=Mac(mac_str2);
+	sender_mac=Mac(mac_str1);
 
 	packet.eth_.dmac_ = Mac(mac_str1);
 	packet.eth_.smac_ = Mac(my_mac_add);
@@ -248,7 +255,9 @@ int main(int argc, char* argv[]) {
 	}
 	
 	pcap_close(handle);
-	/*pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
+
+	//pcap_t* handle = pcap_open_live(dev, 0, 0, 0, errbuf);		//dont send packet? dont recive packet
+	pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
 	while (true) {
 		struct pcap_pkthdr* header;
 		const u_char* packet;
@@ -261,7 +270,7 @@ int main(int argc, char* argv[]) {
 		//printf("%u bytes captured\n\n", header->caplen);
 		struct libnet_ethernet_hdr *ethernet_hdr = (struct libnet_ethernet_hdr *)packet;
 		int packet_len=14;
-		if (ntohs(ethernet_hdr->ether_type) == ETHERTYPE_ARP)
+		if (ntohs(ethernet_hdr->ether_type) == ETHERTYPE_ARP)		//if arp and broadcast -> send arp
 		{
 			printf("\nim arp    ");
 			snprintf(mac_str, 18, "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -313,60 +322,39 @@ int main(int argc, char* argv[]) {
 				packet.arp_.tmac_ = Mac(mac_str1);
 				packet.arp_.tip_ = htonl(Ip(argv[2]));
 
-				int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
+				int res = pcap_sendpacket(pcap, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
 				if (res != 0) {
-					fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+					fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(pcap));
 				}
 				
-				pcap_close(handle);
-				
-				}
-				else
-				{
-					printf("  not broadcast\n");
-				}
-		}*/
-		
-	//todo relay
-	//pcap_t* relayHandle = pcap_open_live(dev, BUFSIZ, 1, 1, errbuf);
-	pcap_t* pcap = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
-	while (true) {
-		struct pcap_pkthdr* relayHeader;
-		const u_char* relayPacket;
-		EthArpPacket* arpRelay;
-		int ret = pcap_next_ex(pcap, &relayHeader, &relayPacket);
-		if (ret == 0) {
-			printf("Timeout, no packet received\n");
-			continue;
-		}
-
-		//printf(" %u bytes captured \n", relayHeader->caplen);
-
-		struct EthHdr *eth_hdr2 =(struct EthHdr *)relayPacket;
-		struct libnet_ethernet_hdr *ethernet_hdr = (struct libnet_ethernet_hdr *)relayPacket;
-		struct libnet_ipv4_hdr *ipv4_hdr = (struct libnet_ipv4_hdr *)(relayPacket+sizeof(struct libnet_ethernet_hdr));
-		struct libnet_tcp_hdr *tcp_hdr = (struct libnet_tcp_hdr *)(relayPacket+sizeof(struct libnet_ethernet_hdr)+sizeof(struct libnet_ipv4_hdr));
-		
-		//TODO
-		// ARP패킷이면 ETHR의 SMAC일때 SENDER의 MAC일경우
-		// MAC(eth_her->dhost) 여기에 내가 설정한 targetmac을 집어넣는다.
-		if (ntohs(ethernet_hdr->ether_type) == ETHERTYPE_IP){
-			    if (ipv4_hdr->ip_p == IPPROTO_ICMP) { // ICMP 패킷인지 확인
+			}
+		}	
+		else{		// if not arp -> relay packet
+			printf(" %u bytes captured \n", header->caplen);
+			struct EthHdr *eth_hdr2 =(struct EthHdr *)packet;
+			struct libnet_ethernet_hdr *ethernet_hdr = (struct libnet_ethernet_hdr *)packet;
+			struct libnet_ipv4_hdr *ipv4_hdr = (struct libnet_ipv4_hdr *)(packet+sizeof(struct libnet_ethernet_hdr));
+			struct libnet_tcp_hdr *tcp_hdr = (struct libnet_tcp_hdr *)(packet+sizeof(struct libnet_ethernet_hdr)+sizeof(struct libnet_ipv4_hdr));
+			
+			if (Mac(ethernet_hdr->ether_shost)==sender_mac){
+				if (ntohs(ethernet_hdr->ether_type) != ETHERTYPE_ARP ){
+					printf("sender mac: %s\n -> \n",mac_str1);
 					eth_hdr2->dmac_ = gateway;
 					Mac(ethernet_hdr->ether_dhost) = eth_hdr2->dmac_;
 					printf("gateway:  %s\n", static_cast<std::string>(gateway).c_str());
-					printf("MAC:  %s   ->   %s\n",
-								static_cast<std::string>(Mac(ethernet_hdr->ether_shost)).c_str(),
-								static_cast<std::string>(Mac(ethernet_hdr->ether_dhost)).c_str()
-								);
-					res = pcap_sendpacket(pcap, reinterpret_cast<const u_char*>(&relayPacket), relayHeader->caplen);
+					// printf("MAC:  %s   ->   %s\n",
+					// 			static_cast<std::string>(Mac(ethernet_hdr->ether_shost)).c_str(),
+					// 			static_cast<std::string>(Mac(ethernet_hdr->ether_dhost)).c_str()
+					// 			);
+					res = pcap_sendpacket(pcap, reinterpret_cast<const u_char*>(&packet), header->caplen);
 					if (res != 0) {
 						fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(pcap));
 					}
-    			}
+				}
+			}
+	
 		}
-	}
-	//pcap_close(relayHandle);
-	//}
-	pcap_close(pcap);
+	
+	}  // while flow
+	pcap_close(pcap);	
 }
